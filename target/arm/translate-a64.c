@@ -627,9 +627,9 @@ static void gen_exception_internal_insn(DisasContext *s, int excp)
     s->base.is_jmp = DISAS_NORETURN;
 }
 
-static void gen_set_exception_far(uint64_t far)
+static void gen_set_exception_far(uint64_t fault_addr)
 {
-    TCGv_i64 tfar = tcg_const_i64(far);
+    TCGv_i64 tfar = tcg_const_i64(fault_addr);
     tcg_gen_st_i64(tfar, cpu_env, offsetof(CPUArchState, exception.vaddress));
     tcg_temp_free_i64(tfar);
 }

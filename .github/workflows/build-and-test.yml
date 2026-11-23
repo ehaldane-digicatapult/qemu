@@ -32,14 +32,14 @@ jobs:
             container: capablehub/tch-ubuntu-24-builder
             shell: bash
             targets: "arm-softmmu,aarch64-softmmu,morello-softmmu,mips64-softmmu,mips64cheri128-softmmu,riscv64-softmmu,riscv64xcheri-softmmu,riscv32-softmmu,riscv32xcheri-softmmu,x86_64-softmmu,riscv32cheristd-softmmu,riscv64cheristd-softmmu,riscv32y-softmmu,riscv64y-softmmu"
-            configure_flags: "--enable-virtfs"
+            configure_flags: "--enable-virtfs --enable-fdt=system"
           - name: linux-sanitizers
             host: linux
             runs-on: the-capable-hub-aws-ci-amd64
             container: capablehub/tch-ubuntu-24-builder
             shell: bash
             targets: "arm-softmmu,aarch64-softmmu,morello-softmmu,mips64-softmmu,mips64cheri128-softmmu,riscv64-softmmu,riscv64xcheri-softmmu,riscv32-softmmu,riscv32xcheri-softmmu,x86_64-softmmu,riscv32cheristd-softmmu,riscv64cheristd-softmmu,riscv32y-softmmu,riscv64y-softmmu"
-            configure_flags: "--enable-virtfs --cc=clang --cxx=clang++ --enable-debug --enable-sanitizers"
+            configure_flags: "--enable-virtfs --enable-fdt=system --cc=clang --cxx=clang++ --enable-debug --enable-sanitizers"
           - name: macos
             host: macos
             runs-on: macos-latest
@@ -48,7 +48,7 @@ jobs:
             # The host-specific code (9pfs in particular) is compiled once for
             # all targets, so a subset is enough to cover the macOS-only paths.
             targets: "aarch64-softmmu,riscv64-softmmu,riscv64cheristd-softmmu,riscv32y-softmmu,riscv64y-softmmu,x86_64-softmmu"
-            configure_flags: "--enable-virtfs"
+            configure_flags: "--enable-virtfs --enable-fdt=system"
           # Both MSYS2 environments share the same toolchain but differ in runtime
           # (UCRT vs legacy msvcrt, which QEMU 7.2's original CI used).
           # QEMU 7.2 has no Windows 9p support, so virtfs also gets dropped.
@@ -59,7 +59,8 @@ jobs:
             container: ''
             shell: msys2 {0}
             targets: "aarch64-softmmu,morello-softmmu,riscv64-softmmu,riscv64cheristd-softmmu,riscv32y-softmmu,riscv64y-softmmu,x86_64-softmmu"
-            configure_flags: "--meson=meson"
+            configure_flags: "--meson=meson --enable-fdt=system"
+            msys2_extra_packages: "dtc:p libslirp:p"
           - name: windows-mingw64
             host: windows
             msystem: MINGW64
@@ -67,7 +68,10 @@ jobs:
             container: ''
             shell: msys2 {0}
             targets: "aarch64-softmmu,morello-softmmu,riscv64-softmmu,riscv64cheristd-softmmu,riscv32y-softmmu,riscv64y-softmmu,x86_64-softmmu"
-            configure_flags: "--meson=meson"
+            # MSYS2 has no MINGW64 dtc or libslirp packages: use QEMU's dtc
+            # submodule, and build libslirp from source in a later step.
+            configure_flags: "--meson=meson --enable-fdt=internal"
+            msys2_extra_packages: ""
 
     steps:
       # Stop Windows' CRLF from breaking configure and other scripts.
@@ -98,8 +102,22 @@ jobs:
             ninja:p
             python:p
             meson:p
-            dtc:p
-            libslirp:p
+            ${{ matrix.msys2_extra_packages }}
+
+      # meson is a native Windows program here, so give it a Windows-style
+      # prefix rather than the MSYS2 path /mingw64.
+      - name: Build libslirp from source
+        if: matrix.msystem == 'MINGW64'
+        env:
+          LIBSLIRP_VERSION: v4.9.1
+        run: |
+          src="$(cygpath -u "$RUNNER_TEMP")/libslirp"
+          git clone --depth 1 --branch "$LIBSLIRP_VERSION" \
+            https://gitlab.freedesktop.org/slirp/libslirp.git "$src"
+          meson setup "$src/build" "$src" \
+            --buildtype=release \
+            --prefix="$(cygpath -m "$MINGW_PREFIX")"
+          meson install -C "$src/build"
 
       - name: Install dependencies
         if: matrix.host == 'linux'
@@ -138,7 +156,6 @@ jobs:
             --enable-werror \
             --disable-docs \
             --disable-cocoa \
-            --enable-fdt=system \
             --disable-capstone \
             --disable-linux-user \
             --target-list="${{ matrix.targets }}" \
@@ -147,7 +164,12 @@ jobs:
       - name: Build
         run: |
           cd build
-          make -j$(getconf _NPROCESSORS_ONLN)
+          # On Windows, keep going after errors to list every failure in one run.
+          keep_going=""
+          if [ "${{ matrix.host }}" = "windows" ]; then
+            keep_going="-k"
+          fi
+          make $keep_going -j$(getconf _NPROCESSORS_ONLN)
 
       - name: Run Morello tests
         if: matrix.host == 'linux'
